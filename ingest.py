@@ -1,7 +1,8 @@
 """
-LexGuard — Phase 5: Data Ingestion Pipeline
-=============================================
-Reads PDF contracts from ./data/, chunks them page-by-page using PyMuPDF,
+LexGuard — Data Ingestion Pipeline
+====================================
+Reads PDF contracts from ./data/, extracts full text with PyMuPDF,
+splits into semantically coherent chunks using RecursiveTextSplitter,
 packages metadata as JSON, and bulk-uploads to Snowflake's CONTRACT_CHUNKS
 table via write_pandas.
 
@@ -23,6 +24,7 @@ from dotenv import load_dotenv
 
 import config  # Seeds all randomness on import
 from local_store import LocalStore
+from text_splitter import RecursiveTextSplitter
 
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
@@ -50,9 +52,13 @@ TARGET_TABLE = "CONTRACT_CHUNKS"
 # Minimum character threshold — pages with fewer chars trigger OCR fallback
 MIN_TEXT_CHARS = 50
 
+# Chunk configuration
+CHUNK_SIZE = 512       # Target words per chunk
+CHUNK_OVERLAP = 50     # Overlap words between consecutive chunks
+
 
 # ──────────────────────────────────────────────
-# Helper utilities (reused from Phase 3 notebook)
+# Helper utilities
 # ──────────────────────────────────────────────
 
 def clean_text(s: str) -> str:
@@ -77,21 +83,27 @@ def discover_pdfs(pdf_dir: str) -> list[str]:
 
 
 # ──────────────────────────────────────────────
-# Core chunking logic
+# Core chunking logic — Recursive Text Splitting
 # ──────────────────────────────────────────────
 
 def extract_chunks(pdf_paths: list[str]) -> list[dict]:
     """
-    Read each PDF page-by-page with PyMuPDF, extract text, and return a list
-    of chunk dictionaries ready for DataFrame conversion.
+    Read each PDF with PyMuPDF, extract full document text, and split
+    into semantically coherent chunks using RecursiveTextSplitter.
 
     Each chunk dict contains:
         CHUNK_ID          – UUID string
         DOC_NAME          – PDF filename
-        CHUNK_TEXT         – Cleaned page text
-        METADATA          – JSON string with page_number, modality, char_count
+        CHUNK_TEXT         – Cleaned chunk text
+        METADATA          – JSON string with chunk_index, total_chunks,
+                            word_count, modality, source_pages
         UPLOAD_TIMESTAMP  – ISO-8601 timestamp
     """
+    splitter = RecursiveTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+    )
+
     chunks: list[dict] = []
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -99,12 +111,11 @@ def extract_chunks(pdf_paths: list[str]) -> list[dict]:
         doc_name = os.path.basename(pdf_path)
         doc = fitz.open(pdf_path)
 
-        for page_idx in tqdm(
-            range(len(doc)),
-            desc=f"   ↳ {doc_name[:45]}…",
-            unit="page",
-            leave=False,
-        ):
+        # Step 1: Extract full document text (concatenate all pages)
+        full_text_parts = []
+        page_modalities = []
+
+        for page_idx in range(len(doc)):
             page = doc.load_page(page_idx)
             raw_text = page.get_text("text")
             text = clean_text(raw_text)
@@ -132,27 +143,40 @@ def extract_chunks(pdf_paths: list[str]) -> list[dict]:
                         f"page {page_idx + 1}: {e}"
                     )
 
-            # Skip empty pages
-            if not text:
-                continue
+            if text:
+                full_text_parts.append(text)
+                page_modalities.append(modality)
 
+        doc.close()
+
+        full_text = "\n\n".join(full_text_parts)
+        if not full_text.strip():
+            continue
+
+        # Determine dominant modality
+        modality = "ocr" if page_modalities.count("ocr") > len(page_modalities) // 2 else "text"
+
+        # Step 2: Split into semantic chunks
+        text_chunks = splitter.split_text(full_text)
+
+        for chunk_idx, chunk_text in enumerate(text_chunks):
             metadata = {
-                "page_number": page_idx + 1,
+                "chunk_index": chunk_idx + 1,
+                "total_chunks": len(text_chunks),
+                "word_count": len(chunk_text.split()),
                 "modality": modality,
-                "char_count": len(text),
+                "source_pages": len(full_text_parts),
             }
 
             chunks.append(
                 {
                     "CHUNK_ID": config.get_seeded_uuid(),
                     "DOC_NAME": doc_name,
-                    "CHUNK_TEXT": text,
+                    "CHUNK_TEXT": chunk_text,
                     "METADATA": json.dumps(metadata),
                     "UPLOAD_TIMESTAMP": now,
                 }
             )
-
-        doc.close()
 
     return chunks
 
