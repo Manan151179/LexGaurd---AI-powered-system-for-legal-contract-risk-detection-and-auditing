@@ -1,0 +1,35 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & runtime output
+logs/
+artifacts/
+*.log
+
+# Large data stores (regenerable)
+evaluate_store/
+evaluate_store_BAAI_bge_small_en_v1.5/
+evaluate_store_all_MiniLM_L6_v2/
+project_data_store/
+
+# CUAD dataset (too large for GitHub — use download script)
+CUAD_v1/
+
+# Model cache
+.cache/
