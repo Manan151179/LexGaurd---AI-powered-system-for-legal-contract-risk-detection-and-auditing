@@ -8,7 +8,7 @@ from agent import run_lexguard_agent as run_baseline_agent
 from monitor import MetricsCollector
 import chat_history
 
-# Init Snowflake chat history tables on startup
+# Init local SQLite chat history tables on startup
 chat_history.init_tables()
 
 # ═══════════════════════════════════════════════
@@ -448,11 +448,11 @@ with st.sidebar:
     st.markdown('<div class="sidebar-title">📡 System Status</div>', unsafe_allow_html=True)
 
     gemini_status = "online" if os.getenv("GEMINI_API_KEY") else "offline"
-    snow_status = "online" if os.getenv("SNOW_ACCOUNT") else "offline"
+    store_status = "online"
 
     st.markdown(f"""<div class="glass-card">
         <div><span class="status-dot status-{gemini_status}"></span> Gemini API</div>
-        <div><span class="status-dot status-{snow_status}"></span> Snowflake DB</div>
+        <div><span class="status-dot status-{store_status}"></span> Local Store (SQLite)</div>
     </div>""", unsafe_allow_html=True)
 
     # ── Chat History ──

@@ -1,6 +1,5 @@
 import os
 import streamlit as st
-import snowflake.connector
 
 import config  # noqa: F401 — seeds randomness on import
 from local_store import LocalStore
@@ -119,59 +118,58 @@ def extract_clause_with_bert(clause_type: str, context_text: str) -> str:
         print(f"\n❌ BERT ERROR: {str(e)}\n")
         return f"Error extracting clause: {str(e)}"
 
-@st.cache_resource(ttl=3600)
-def get_snowflake_connection():
-    print("❄️ Opening persistent Snowflake connection...")
+# ──────────────────────────────────────────────
+# Local hybrid retrieval (replaces Snowflake)
+# ──────────────────────────────────────────────
 
-    return snowflake.connector.connect(
-        user=os.getenv("SNOW_USER"),
-        password=os.getenv("SNOW_PASS"),
-        account=os.getenv("SNOW_ACCOUNT"),
-        role=os.getenv("SNOW_ROLE", "TRAINING_ROLE"),
-        warehouse=os.getenv("SNOW_WH", "COMPUTE_WH"),
-        database=os.getenv("SNOW_DB", "LEXGUARD_DB"),
-        schema=os.getenv("SNOW_SCHEMA", "CONTRACT_DATA")
-    )
+@st.cache_resource
+def _get_local_store():
+    """Load or initialize the local data store for hybrid search."""
+    store = LocalStore(working_dir=config.HYPERPARAMS.get("working_dir", "./project_data_store"))
+    return store
+
 
 def retrieve_contract_clauses(search_term: str) -> str:
     """
-    Searches the Snowflake database for specific legal contract clauses based on a keyword.
-    Use this tool whenever the user asks about the contents of the contracts.
+    Searches the local hybrid index (BM25 + FAISS) for specific legal
+    contract clauses based on a keyword.
 
     Args:
-        search_term: A specific keyword or short phrase to search for (e.g., "termination", "liability").
+        search_term: A specific keyword or short phrase to search for
+                     (e.g., "termination", "liability").
 
     Returns:
-        A string containing the retrieved contract chunks, or an error message if the search fails.
+        A string containing the retrieved contract chunks, or an error
+        message if the search fails.
     """
-    print(f"🔧 Tool Invoked: Searching Snowflake for '{search_term}'...")
-    
+    print(f"🔧 Tool Invoked: Searching local store for '{search_term}'...")
+
     try:
-        conn = get_snowflake_connection()
-        cursor = conn.cursor()
-        
-        query = f"""
-            SELECT CHUNK_ID, DOC_NAME, CHUNK_TEXT 
-            FROM CONTRACT_CHUNKS 
-            WHERE CHUNK_TEXT ILIKE '%{search_term}%'
-            LIMIT 5;
-        """
-        cursor.execute(query)
-        results = cursor.fetchall()
-        
+        store = _get_local_store()
+
+        if not store.chunks:
+            return f"No contract data loaded. Please ingest contracts first."
+
+        results = store.search_hybrid(search_term, top_k=5)
+
         if not results:
             return f"No evidence found in the contracts for '{search_term}'."
-            
+
         evidence = []
-        for row in results:
-            evidence.append(f"[Source: {row[1]} | Chunk ID: {row[0]}]\n{row[2]}")
-            
+        for item in results:
+            doc = item.get("doc_name", "Unknown")
+            chunk_id = item.get("chunk_id", "N/A")
+            text = item.get("text", "")
+            score = item.get("score", 0)
+            evidence.append(
+                f"[Source: {doc} | Chunk: {chunk_id} | Score: {score:.3f}]\n{text}"
+            )
+
         return "\n\n---\n\n".join(evidence)
-        
+
     except Exception as e:
-        # Added this so we can see the exact raw error in your Mac terminal
-        print(f"\n❌ RAW SNOWFLAKE ERROR: {str(e)}\n") 
-        return f"Database error: {str(e)}"
+        print(f"\n❌ Local search error: {str(e)}\n")
+        return f"Search error: {str(e)}"
 
 def calculate_risk_level(clause_text: str) -> str:
     """

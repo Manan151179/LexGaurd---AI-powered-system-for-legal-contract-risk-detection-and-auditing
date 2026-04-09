@@ -26,8 +26,13 @@ import config  # Seeds all randomness on import
 from local_store import LocalStore
 from text_splitter import RecursiveTextSplitter
 
-import snowflake.connector
-from snowflake.connector.pandas_tools import write_pandas
+# Snowflake is optional — only imported/used when credentials are configured
+try:
+    import snowflake.connector
+    from snowflake.connector.pandas_tools import write_pandas
+    HAS_SNOWFLAKE = True
+except ImportError:
+    HAS_SNOWFLAKE = False
 
 # ──────────────────────────────────────────────
 # Configuration
@@ -301,7 +306,7 @@ def upload_to_snowflake(df: pd.DataFrame) -> None:
 
 def main() -> None:
     print("=" * 60)
-    print("  LexGuard — Phase 5: Data Ingestion Pipeline")
+    print("  LexGuard — Data Ingestion Pipeline")
     print("=" * 60)
 
     # 1. Discover PDFs
@@ -316,10 +321,10 @@ def main() -> None:
     print(f"\n🧩 Total chunks extracted: {len(chunks)}")
 
     if not chunks:
-        print("⚠  No chunks produced — nothing to upload. Exiting.")
+        print("⚠  No chunks produced — nothing to ingest. Exiting.")
         return
 
-    # 3. Persist to separated local store (inspired by HyperGraphRAG)
+    # 3. Persist to local store (primary storage)
     store = LocalStore(working_dir=config.HYPERPARAMS["working_dir"])
     store.ingest(chunks)
     print(f"\n💾 Local store saved to '{config.HYPERPARAMS['working_dir']}'")
@@ -329,8 +334,11 @@ def main() -> None:
     print(f"\n📊 DataFrame shape: {df.shape}")
     print(df.head(3).to_string(index=False, max_colwidth=60))
 
-    # 4. Upload to Snowflake
-    upload_to_snowflake(df)
+    # 5. Optionally upload to Snowflake (if credentials are configured)
+    if HAS_SNOWFLAKE and os.getenv("SNOW_ACCOUNT"):
+        upload_to_snowflake(df)
+    else:
+        print("\nℹ️  Snowflake not configured — skipping cloud upload (local store is ready).")
 
     print("\n🎉 Ingestion pipeline finished successfully!\n")
 
