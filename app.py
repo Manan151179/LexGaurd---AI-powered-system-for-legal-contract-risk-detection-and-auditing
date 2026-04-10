@@ -432,6 +432,7 @@ with st.sidebar:
             with st.spinner("📑 Generating Contract Metadata Brief (V4 — 8 entities)..."):
                 from tools import extract_contract_brief
                 brief_data = extract_contract_brief(st.session_state.local_context)
+                st.session_state.local_brief_data = brief_data
                 
                 if brief_data:
                     # Build a rich formatted brief with all 8 entities
@@ -464,6 +465,26 @@ with st.sidebar:
                     st.rerun() # Refresh chat UI instantly
                     
             st.success(f"Loaded & Analyzed: {uploaded_file.name}")
+
+        # ── PDF Export Button (shown if audit data exists) ──
+        if st.session_state.get("local_extracted_clauses"):
+            st.markdown('<div class="sidebar-title">📥 Export Report</div>', unsafe_allow_html=True)
+            try:
+                from report_generator import generate_pdf_report
+                pdf_bytes = generate_pdf_report(
+                    filename=st.session_state.get("uploaded_filename", "contract"),
+                    clauses=st.session_state.get("local_extracted_clauses"),
+                    brief=st.session_state.get("local_brief_data"),
+                )
+                st.download_button(
+                    label="📄 Download PDF Report",
+                    data=pdf_bytes,
+                    file_name=f"LexGuard_Audit_{st.session_state.get('uploaded_filename', 'report')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Report generation error: {e}")
     else:
         if st.session_state.local_context is not None:
             st.session_state.local_context = None
