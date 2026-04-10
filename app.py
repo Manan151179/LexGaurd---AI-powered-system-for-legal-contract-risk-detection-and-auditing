@@ -347,32 +347,76 @@ with st.sidebar:
                 from tools import extract_risk_clauses_llm
                 risk_data = extract_risk_clauses_llm(st.session_state.local_context)
                 st.session_state.local_extracted_clauses = risk_data
-                
-                if risk_data:
-                    # Build annotated risk report with expandable source excerpts
+
+            # Phase 3: BERT Cross-Validation
+            bert_data = {}
+            with st.spinner("🔬 Cross-validating with BERT model (41 clauses)..."):
+                from tools import batch_bert_extraction, cross_validate_results
+                bert_data = batch_bert_extraction(st.session_state.local_context)
+
+            # Merge and cross-validate
+            if risk_data and bert_data:
+                merged_data = cross_validate_results(risk_data, bert_data)
+                st.session_state.local_extracted_clauses = merged_data
+            elif risk_data:
+                merged_data = risk_data
+            else:
+                merged_data = {}
+
+            if merged_data:
+                    # Build annotated risk report with cross-validation badges
                     risk_md = f"**⚠️ Risk Clause Audit: {uploaded_file.name}**\n\n"
                     
                     detected_clauses = []
                     not_found_clauses = []
+                    review_clauses = []
                     ref_counter = 0
                     
-                    for clause_name, info in risk_data.items():
-                        if isinstance(info, dict) and info.get("detected", False):
-                            ref_counter += 1
-                            detected_clauses.append((clause_name, info, ref_counter))
-                        else:
-                            not_found_clauses.append(clause_name)
+                    for clause_name, info in merged_data.items():
+                        if isinstance(info, dict):
+                            llm_det = info.get("llm_detected", info.get("detected", False))
+                            bert_det = info.get("bert_detected", False)
+                            if llm_det or bert_det:
+                                ref_counter += 1
+                                detected_clauses.append((clause_name, info, ref_counter))
+                                if info.get("needs_review", False):
+                                    review_clauses.append(clause_name)
+                            else:
+                                not_found_clauses.append(clause_name)
                     
                     if detected_clauses:
-                        # Risk summary table
-                        risk_md += "| # | Clause | Risk | Section |\n|:---|:---|:---|:---|\n"
+                        # Risk summary table with cross-validation badges
+                        risk_md += "| # | Clause | Risk | Verification | BERT Conf. | Section |\n|:---|:---|:---|:---|:---|:---|\n"
                         for clause_name, info, ref_num in detected_clauses:
                             risk_level = info.get("risk_level", "Unknown")
                             section = info.get("section", "—")
                             risk_icon = "🔴" if risk_level == "High" else "🟡" if risk_level == "Medium" else "🟢"
-                            risk_md += f"| [{ref_num}] | {risk_icon} **{clause_name}** | {risk_level} | {section} |\n"
+                            
+                            # Cross-validation badge
+                            agreement = info.get("agreement", "")
+                            if agreement == "agreed":
+                                verify_badge = "✅ Verified"
+                            elif agreement == "disagreement":
+                                verify_badge = "⚠️ Review"
+                            elif agreement == "llm_only":
+                                verify_badge = "🤖 LLM-Only"
+                            elif agreement == "bert_only":
+                                verify_badge = "🔬 BERT-Only"
+                            else:
+                                verify_badge = "—"
+                            
+                            bert_conf = info.get("bert_confidence", 0)
+                            conf_str = f"{bert_conf:.2%}" if bert_conf > 0 else "—"
+                            
+                            risk_md += f"| [{ref_num}] | {risk_icon} **{clause_name}** | {risk_level} | {verify_badge} | {conf_str} | {section} |\n"
                         
-                        risk_md += f"\n✅ **{len(detected_clauses)}** risks detected, **{len(not_found_clauses)}** clauses not found.\n"
+                        # Summary stats
+                        agreed_count = sum(1 for _, i, _ in detected_clauses if i.get("agreement") == "agreed")
+                        review_count = len(review_clauses)
+                        risk_md += f"\n✅ **{len(detected_clauses)}** risks detected, **{agreed_count}** verified by both models"
+                        if review_count > 0:
+                            risk_md += f", **{review_count}** flagged for human review"
+                        risk_md += f", **{len(not_found_clauses)}** clauses not found.\n"
                     else:
                         risk_md += "✅ No critical risk clauses detected in this contract.\n"
                     

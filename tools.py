@@ -118,6 +118,124 @@ def extract_clause_with_bert(clause_type: str, context_text: str) -> str:
         print(f"\n❌ BERT ERROR: {str(e)}\n")
         return f"Error extracting clause: {str(e)}"
 
+
+def batch_bert_extraction(context_text: str) -> dict:
+    """
+    Run BERT extraction on ALL 41 CUAD clause types at once.
+    Returns a dict mapping clause_name -> {detected, confidence, excerpt}.
+
+    Used at upload time for cross-validation against LLM results.
+    """
+    print(f"🔧 Tool Invoked: Batch BERT Extraction (41 clauses)...")
+    results = {}
+    context_capped = context_text[:50000]  # BERT context window limit
+
+    try:
+        extractor = get_bert_extractor()
+    except Exception as e:
+        print(f"❌ BERT model load failed: {e}")
+        return {}
+
+    for clause_name, prompt in CUAD_PROMPTS.items():
+        try:
+            bert_result = extractor(question=prompt, context=context_capped, top_k=1)
+
+            if isinstance(bert_result, list):
+                best = bert_result[0]
+            else:
+                best = bert_result
+
+            score = best.get("score", 0)
+            answer = best.get("answer", "").strip()
+            start_idx = best.get("start", 0)
+            end_idx = best.get("end", 0)
+
+            if score >= 0.0004 and answer:
+                expanded = expand_fragment_to_sentence(context_capped, start_idx, end_idx)
+                results[clause_name] = {
+                    "detected": True,
+                    "confidence": round(score, 4),
+                    "excerpt": expanded,
+                }
+            else:
+                results[clause_name] = {
+                    "detected": False,
+                    "confidence": round(score, 4),
+                    "excerpt": None,
+                }
+        except Exception as e:
+            results[clause_name] = {
+                "detected": False,
+                "confidence": 0.0,
+                "excerpt": f"Error: {str(e)}",
+            }
+
+    detected_count = sum(1 for v in results.values() if v["detected"])
+    print(f"✅ BERT batch complete: {detected_count}/{len(CUAD_PROMPTS)} clauses detected.")
+    return results
+
+
+def cross_validate_results(llm_results: dict, bert_results: dict) -> dict:
+    """
+    Compare LLM and BERT clause detection results.
+
+    For each clause, produces:
+        - agreement: "agreed" | "disagreement" | "llm_only" | "bert_only"
+        - llm_detected: bool
+        - bert_detected: bool
+        - bert_confidence: float
+        - risk_level: str (from LLM)
+        - needs_review: bool (True if models disagree)
+
+    Returns dict mapping clause_name -> merged info dict.
+    """
+    merged = {}
+
+    all_clauses = set(list(llm_results.keys()) + list(bert_results.keys()))
+
+    for clause_name in all_clauses:
+        llm_info = llm_results.get(clause_name, {})
+        bert_info = bert_results.get(clause_name, {})
+
+        llm_detected = bool(isinstance(llm_info, dict) and llm_info.get("detected", False))
+        bert_detected = bool(isinstance(bert_info, dict) and bert_info.get("detected", False))
+        bert_conf = bert_info.get("confidence", 0.0) if isinstance(bert_info, dict) else 0.0
+
+        # Determine agreement status
+        if llm_detected and bert_detected:
+            agreement = "agreed"
+            needs_review = False
+        elif llm_detected and not bert_detected:
+            # LLM found it but BERT didn't — could be BERT limitation (50K cap)
+            agreement = "llm_only"
+            needs_review = False  # LLM sees full doc, BERT is capped
+        elif not llm_detected and bert_detected:
+            # BERT found it but LLM didn't — potential LLM miss, flag for review
+            agreement = "disagreement"
+            needs_review = True
+        else:
+            # Neither found it
+            agreement = "agreed"
+            needs_review = False
+
+        merged[clause_name] = {
+            # Preserve all original LLM fields
+            **(llm_info if isinstance(llm_info, dict) else {}),
+            # Add cross-validation metadata
+            "llm_detected": llm_detected,
+            "bert_detected": bert_detected,
+            "bert_confidence": bert_conf,
+            "bert_excerpt": bert_info.get("excerpt") if isinstance(bert_info, dict) else None,
+            "agreement": agreement,
+            "needs_review": needs_review,
+        }
+
+    agreed = sum(1 for v in merged.values() if v["agreement"] == "agreed")
+    disagreements = sum(1 for v in merged.values() if v["agreement"] == "disagreement")
+    llm_only = sum(1 for v in merged.values() if v["agreement"] == "llm_only")
+    print(f"🔍 Cross-validation: {agreed} agreed, {llm_only} LLM-only, {disagreements} disagreements")
+    return merged
+
 # ──────────────────────────────────────────────
 # Local hybrid retrieval (replaces Snowflake)
 # ──────────────────────────────────────────────
